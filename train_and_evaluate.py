@@ -1,12 +1,19 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, AdamW
+# 修改部分：分开导入 BertTokenizer 和 AdamW
+from transformers import BertTokenizer
+from torch.optim import AdamW  # 使用 PyTorch 原生的 AdamW
 import numpy as np
 import os
 
+# 导入所有常量和模型
+# 确保 constants.py 和 models.py 在同一目录下
 from constants import TAG_TO_ID, SPAN_LABEL_TO_ID, ENTITY_TYPES, MODEL_NAME, MAX_GEN_LEN
 from models import LayeringNERModel, SingleTypeNERModel, SpanBasedNERModel, ReasoningIENERModel
+
+# 导入数据处理模块
+# 确保 data_processor.py 在同一目录下
 from data_processor import load_data, preprocess_for_all_methods
 
 # --- 辅助函数：将标签字符串转换为 ID ---
