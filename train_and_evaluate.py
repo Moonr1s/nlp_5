@@ -22,8 +22,9 @@ def tags_to_ids(tags, tag_map):
 # --- 1. Sequence Data Collator (Layering / Cascading) ---
 def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
     tokens = [item['tokens'] for item in batch]
-    # Fast Tokenizer 在这里会支持 word_ids()
-    encoded_inputs = tokenizer(tokens, is_split_into_words=True, padding='max_length', truncation=True, return_tensors='pt')
+    # [修复 1] 使用 padding=True (动态填充) 代替 'max_length'
+    # 这会根据当前 batch 中最长的句子进行 padding，而不是强制 512，大幅节省显存
+    encoded_inputs = tokenizer(tokens, is_split_into_words=True, padding=True, truncation=True, return_tensors='pt')
     
     batch_labels_outer = []
     batch_labels_inner = []
@@ -33,9 +34,9 @@ def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
         if is_layering:
             raw_tags_outer = item['outer_tags']
             raw_tags_inner = item['inner_tags']
-            etype = None # Layering 模式下不需要 etype
+            etype = None 
         else:
-            etype = 'PER' # 简化演示
+            etype = 'PER' 
             raw_tags_outer = item.get(f'{etype}_tags', ['O'] * len(item['tokens']))
             raw_tags_inner = raw_tags_outer 
             
@@ -53,10 +54,8 @@ def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
                 
                 # 2. 处理 Inner Label
                 if is_layering:
-                    # Layering 模式直接使用传入的 tag_map
                     inner_val = tag_map.get(raw_tags_inner[word_idx], -100)
                 else:
-                    # Cascading 模式动态构建 map (依赖 etype)
                     tag_map_single = {'O': 0, f'B-{etype}': 1, f'I-{etype}': 2}
                     inner_val = tag_map_single.get(raw_tags_inner[word_idx], -100)
                 
@@ -79,7 +78,8 @@ def data_collator_span_based(batch, tokenizer, span_label_map, max_spans=100):
     if len(batch) > 1: raise ValueError("Span-Based batch_size=1 only for demo.")
     item = batch[0]
     tokens = item['tokens']
-    encoded_inputs = tokenizer(tokens, is_split_into_words=True, padding='max_length', truncation=True, return_tensors='pt')
+    # [修复 1] 同样使用动态填充
+    encoded_inputs = tokenizer(tokens, is_split_into_words=True, padding=True, truncation=True, return_tensors='pt')
     
     all_spans = item['spans']
     selected_spans = all_spans[:max_spans] 
@@ -96,14 +96,12 @@ def data_collator_generative(batch, tokenizer):
     inputs = [item['input_text'] for item in batch]
     targets = [item['target_text'] for item in batch]
     
-    # 输入 Tokenization
-    model_inputs = tokenizer(inputs, max_length=512, padding='max_length', truncation=True, return_tensors='pt')
+    # [修复 1] 动态填充，且可以适当限制 max_length (例如 128 或 256) 防止极端长句
+    model_inputs = tokenizer(inputs, max_length=256, padding=True, truncation=True, return_tensors='pt')
     
-    # 目标 Tokenization (作为 labels)
     with tokenizer.as_target_tokenizer():
-        labels = tokenizer(targets, max_length=MAX_GEN_LEN, padding='max_length', truncation=True, return_tensors='pt')
+        labels = tokenizer(targets, max_length=MAX_GEN_LEN, padding=True, truncation=True, return_tensors='pt')
     
-    # 将 Pad Token 的 Label 设为 -100，忽略 Loss
     labels_ids = labels['input_ids']
     labels_ids[labels_ids == tokenizer.pad_token_id] = -100
     
@@ -130,19 +128,21 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
     tokenizer = BertTokenizerFast.from_pretrained(MODEL_NAME)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     
-    # Collator 选择
+    # [修复 2] 降低 Batch Size，适应 6GB 显存
+    # Layering/Cascading 从 4 降为 2
     if "Layering" in method_name:
         collator = lambda batch: data_collator_sequence(batch, tokenizer, tag_map, is_layering=True)
-        batch_size = 4
+        batch_size = 2 
     elif "Cascading" in method_name:
         collator = lambda batch: data_collator_sequence(batch, tokenizer, tag_map, is_layering=False)
-        batch_size = 4
+        batch_size = 2
     elif "Span-Based" in method_name:
         collator = lambda batch: data_collator_span_based(batch, tokenizer, tag_map)
         batch_size = 1 
     elif "ReasoningIE" in method_name:
         collator = lambda batch: data_collator_generative(batch, tokenizer)
-        batch_size = 4
+        # 生成式模型参数量大 (BERT Encoder + Decoder)，建议 batch_size 设为 2 或 1
+        batch_size = 2
     else:
         raise ValueError(f"Unknown method name: {method_name}")
     
@@ -152,7 +152,6 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
         model.train()
         total_loss = 0
         
-        # 使用 tqdm 增加进度条
         progress_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Epoch {epoch+1}/{num_epochs}")
         
         for i, batch in progress_bar:
@@ -179,6 +178,8 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
             progress_bar.set_postfix({'loss': f'{total_loss / (i + 1):.4f}'})
 
     print(f"训练完成：{method_name}。")
+    # 训练结束后清理显存，为下一个模型腾出空间
+    torch.cuda.empty_cache()
 
 # --- 主实验函数 ---
 def run_experiment_pipeline(data_files):
