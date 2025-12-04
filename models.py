@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from transformers import BertModel
+from transformers import BertModel, EncoderDecoderModel
 from constants import EMBED_DIM, ENTITY_TYPES, NUM_SEQ_LABELS, NUM_SPAN_LABELS, MODEL_NAME, MAX_SPAN_LEN
 
 # --- 1. Layering Method Model (外层/内层 Sequential Tagging) ---
@@ -48,7 +48,6 @@ class LayeringNERModel(nn.Module):
 
 
 # --- 2. Cascading Method Model (每个实体类型一个独立的模型) ---
-# Cascading模型与 Layering/单个序列标注模型结构相似，只是针对一个实体类型。
 class SingleTypeNERModel(nn.Module):
     def __init__(self, entity_type):
         super().__init__()
@@ -94,23 +93,16 @@ class SpanBasedNERModel(nn.Module):
         sequence_output = outputs[0] # (batch_size, seq_len, embed_dim)
 
         # 2. 构造 Span Representation
-        # 批次维度展平：将 (Batch * Span_Count) 作为新的批次大小
-        
-        # a) 获取 Start/End 向量 (使用 torch.gather/index_select 或更简单的 view/indexing)
-        # 这里需要复杂的批次索引操作，我们使用简单的索引来实现逻辑演示:
-        
-        # 重新组织 sequence_output 以便索引 (简化的单句处理逻辑，实际需要批量处理)
+        # 注意：这里仅演示 batch_size=1 的逻辑，实际需要更复杂的 batch indexing
         if sequence_output.size(0) > 1:
-            raise NotImplementedError("Span-Based 模型的批处理索引实现复杂，请参考官方实现。")
+            raise NotImplementedError("Span-Based 模型的 Data Collator 演示仅支持 batch_size=1。")
 
         h_start = sequence_output[0, start_indices]
         h_end = sequence_output[0, end_indices]
 
-        # b) 计算 Span Average/Max Pooling
-        # 由于批量大小为 1，可以简化计算
+        # b) 计算 Span Average Pooling
         span_reps = []
         for i, (s, e) in enumerate(zip(start_indices, end_indices)):
-            # Average Pooling of tokens within the span [s:e]
             h_span_avg = torch.mean(sequence_output[0, s:e], dim=0)
             span_reps.append(h_span_avg)
         h_span_avg = torch.stack(span_reps)
@@ -131,59 +123,21 @@ class SpanBasedNERModel(nn.Module):
             
         return logits
 
-# --- 4. ReasoningIE-Style Model (SOTA Span-Based with Enhancement) ---
-class ReasoningIENERModel(SpanBasedNERModel):
+# --- 4. ReasoningIE-Style Model (Generative / Seq2Seq) ---
+class ReasoningIENERModel(nn.Module):
     """
-    模型 4: ReasoningIE-Style (SOTA Span-Based)
-    继承 Span-Based 结构，并增加一个 Transformer Encoder/GNN 来进行推理。
+    模型 4: ReasoningIE Method (Generative / Seq2Seq)
+    参考 HuiResearch/ReasoningIE，使用生成式框架。
+    这里使用 EncoderDecoderModel (BERT-to-BERT) 来模拟生成过程。
+    输入: 原始句子
+    输出: 实体描述字符串 (例如: "人名: 张三; 地名: 北京")
     """
     def __init__(self):
         super().__init__()
-        # 增加一个 Transformer Encoder Layer (模拟 Reasoning Layer/GNN)
-        transformer_layer = nn.TransformerEncoderLayer(d_model=EMBED_DIM, nhead=8, batch_first=True)
-        self.reasoning_encoder = nn.TransformerEncoder(transformer_layer, num_layers=1)
+        # 使用 BERT 初始化 Encoder 和 Decoder (BERT2BERT)
+        self.model = EncoderDecoderModel.from_encoder_decoder_pretrained(MODEL_NAME, MODEL_NAME)
         
-        # 调整分类器输入维度: 引入 Reasoning Layer 的输出
-        # [h_start; h_end; h_average; h_reasoned_start; width_emb] (维度假设)
-        classifier_input_dim = EMBED_DIM * 4 + 50
-        self.span_classifier = nn.Linear(classifier_input_dim, NUM_SPAN_LABELS)
-
-    def forward(self, input_ids, attention_mask, start_indices, end_indices, span_widths, span_labels=None):
-        # 1. BERT Encoding
-        outputs = self.bert(input_ids, attention_mask=attention_mask)
-        sequence_output = outputs[0]
-        
-        # 2. Reasoning Layer
-        # 对 BERT 输出进行推理，增强上下文信息
-        reasoned_output = self.reasoning_encoder(sequence_output, src_key_padding_mask=~attention_mask.bool())
-
-        # 3. Span Representation Generation (使用更丰富的表示)
-        
-        # 仅为演示：使用 reasoned_output 的 start/end 向量代替原始 BERT 输出
-        # 简化索引逻辑 (假设 batch_size=1)
-        if reasoned_output.size(0) > 1:
-            raise NotImplementedError("复杂的批处理索引已省略。")
-            
-        h_start = reasoned_output[0, start_indices]
-        h_end = reasoned_output[0, end_indices]
-
-        # 重新计算 span average using reasoned_output
-        span_reps = []
-        for i, (s, e) in enumerate(zip(start_indices, end_indices)):
-            h_span_avg = torch.mean(reasoned_output[0, s:e], dim=0)
-            span_reps.append(h_span_avg)
-        h_span_avg = torch.stack(span_reps)
-        
-        width_emb = self.span_width_embedding(span_widths)
-
-        # 拼接：[reasoned_h_start; reasoned_h_end; reasoned_h_avg; width_emb]
-        span_representation = torch.cat([h_start, h_end, h_span_avg, width_emb], dim=-1)
-
-        # 4. 分类
-        logits = self.span_classifier(span_representation)
-        
-        if span_labels is not None:
-            loss = self.criterion(logits, span_labels)
-            return loss, logits
-            
-        return logits
+        # 配置生成参数 (bert-base-chinese: [CLS]=101, [SEP]=102, [PAD]=0)
+        self.model.config.decoder_start_token_id = 101 # [CLS]
+        self.model.config.eos_token_id = 102       # [SEP]
+        self.model.config.pad_token_id = 0         # [PAD]

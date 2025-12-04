@@ -1,5 +1,3 @@
-# filename: constants.py (你需要创建此文件)
-
 # 假设的实体类型集合（基于您数据中的PER, ORG, GPE等标签）
 ENTITY_TYPES = ["PER", "ORG", "GPE", "LOC", "WEA", "FAC", "VEH"]
 MODEL_NAME = 'bert-base-chinese' # 假设中文数据集使用中文BERT
@@ -15,7 +13,10 @@ for etype in ENTITY_TYPES:
     tag_id += 2
 NUM_SEQ_LABELS = len(TAG_TO_ID) # 1 (O) + 2 * len(ENTITY_TYPES)
 
-# --- 跨度分类 (Span Classification) 标签映射 (用于 Span-Based / ReasoningIE) ---
+# --- 跨度分类 (Span Classification) 标签映射 (用于 Span-Based) ---
 SPAN_LABEL_TO_ID = {t: i + 1 for i, t in enumerate(ENTITY_TYPES)}
 SPAN_LABEL_TO_ID["O"] = 0 # 非实体跨度
 NUM_SPAN_LABELS = len(SPAN_LABEL_TO_ID) # 1 (O) + len(ENTITY_TYPES)
+
+# --- 生成式模型配置 (用于 ReasoningIE) ---
+MAX_GEN_LEN = 128 # 生成文本的最大长度
