@@ -232,8 +232,10 @@ def data_collator_generative(batch, tokenizer):
     inputs = [item['input_text'] for item in batch]
     targets = [item['target_text'] for item in batch]
     model_inputs = tokenizer(inputs, max_length=256, padding=True, truncation=True, return_tensors='pt')
-    with tokenizer.as_target_tokenizer():
-        labels = tokenizer(targets, max_length=MAX_GEN_LEN, padding=True, truncation=True, return_tensors='pt')
+    
+    # [Fix] 使用 text_target 替代已弃用的 as_target_tokenizer 上下文管理器
+    labels = tokenizer(text_target=targets, max_length=MAX_GEN_LEN, padding=True, truncation=True, return_tensors='pt')
+    
     labels_ids = labels['input_ids']
     labels_ids[labels_ids == tokenizer.pad_token_id] = -100
     return model_inputs['input_ids'], model_inputs['attention_mask'], labels_ids
@@ -258,7 +260,7 @@ def train_and_evaluate(method_name, model, train_dataset, dev_dataset, data_coll
     tokenizer = BertTokenizerFast.from_pretrained(MODEL_NAME)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     
-    # Collator 选择 (Batch Size 设为 2 防止 OOM)
+    # Collator 选择 (ReasoningIE 改为 Batch Size 1 避免 OOM)
     if "Layering" in method_name:
         collator = lambda batch: data_collator_sequence(batch, tokenizer, tag_map, is_layering=True)
         batch_size = 2 
@@ -270,7 +272,8 @@ def train_and_evaluate(method_name, model, train_dataset, dev_dataset, data_coll
         batch_size = 1 
     elif "ReasoningIE" in method_name:
         collator = lambda batch: data_collator_generative(batch, tokenizer)
-        batch_size = 2
+        # [Fix] 显存优化：ReasoningIE 使用 EncoderDecoderModel，参数量大，减小 BS 防止 OOM
+        batch_size = 1 
     else:
         raise ValueError(f"Unknown method name: {method_name}")
     
@@ -309,6 +312,7 @@ def train_and_evaluate(method_name, model, train_dataset, dev_dataset, data_coll
         evaluate_model(method_name, model, dev_dataloader, device, tokenizer)
 
     print(f"训练完成：{method_name}。")
+    # 清理显存
     torch.cuda.empty_cache()
 
 # --- 主实验函数 (加载验证集) ---
