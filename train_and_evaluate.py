@@ -212,17 +212,15 @@ def run_experiment_pipeline(data_files):
     # data_collator_fn 参数在这里传入 None，因为我们在 train_and_evaluate 内部根据方法名选择了 collator
     train_and_evaluate("Layering Method", layering_model, layering_dataset, None, TAG_TO_ID)
 
-    # 若要运行其他方法，请取消以下注释:
-    
-    # --- 方法 2: Cascading Method (以 PER 为例) ---
-    # cascading_per_model = SingleTypeNERModel('PER')
-    # cascading_dataset = NERDataset(processed_data['cascading']) # 注意: 这里需要筛选或调整 dataset 以仅包含有 PER 标签的数据
-    # train_and_evaluate("Cascading Method (PER)", cascading_per_model, cascading_dataset, None, TAG_TO_ID)
+    #--- 方法 2: Cascading Method (以 PER 为例) ---
+    cascading_per_model = SingleTypeNERModel('PER')
+    cascading_dataset = NERDataset(processed_data['cascading']) # 注意: 这里需要筛选或调整 dataset 以仅包含有 PER 标签的数据
+    train_and_evaluate("Cascading Method (PER)", cascading_per_model, cascading_dataset, None, TAG_TO_ID)
 
-    # --- 方法 3: Span-Based Method ---
-    # span_model = SpanBasedNERModel()
-    # span_dataset = NERDataset(processed_data['span_based'])
-    # train_and_evaluate("Span-Based Method", span_model, span_dataset, None, SPAN_LABEL_TO_ID)
+    #--- 方法 3: Span-Based Method ---
+    span_model = SpanBasedNERModel()
+    span_dataset = NERDataset(processed_data['span_based'])
+    train_and_evaluate("Span-Based Method", span_model, span_dataset, None, SPAN_LABEL_TO_ID)
 
 
 if __name__ == '__main__':  
