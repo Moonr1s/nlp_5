@@ -336,11 +336,11 @@ def run_experiment_pipeline(data_files):
     dev_processed = preprocess_for_all_methods(raw_dev)
     
     # 1. Layering
-    layering_model = LayeringNERModel()
-    train_and_evaluate("Layering Method", layering_model, 
-                       NERDataset(train_processed['layering']), 
-                       NERDataset(dev_processed['layering']), 
-                       None, TAG_TO_ID)
+    #layering_model = LayeringNERModel()
+    #train_and_evaluate("Layering Method", layering_model, 
+    #                  NERDataset(train_processed['layering']), 
+    #                   NERDataset(dev_processed['layering']), 
+    #                   None, TAG_TO_ID)
 
     # 2. Cascading (PER)
     cascading_model = SingleTypeNERModel('PER')
