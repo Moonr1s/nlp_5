@@ -233,7 +233,7 @@ def data_collator_generative(batch, tokenizer):
     targets = [item['target_text'] for item in batch]
     model_inputs = tokenizer(inputs, max_length=256, padding=True, truncation=True, return_tensors='pt')
     
-    # [Fix] 使用 text_target 替代已弃用的 as_target_tokenizer 上下文管理器
+    # [修复] 使用 text_target 替代已弃用的 as_target_tokenizer 上下文管理器，并消除警告
     labels = tokenizer(text_target=targets, max_length=MAX_GEN_LEN, padding=True, truncation=True, return_tensors='pt')
     
     labels_ids = labels['input_ids']
@@ -260,7 +260,7 @@ def train_and_evaluate(method_name, model, train_dataset, dev_dataset, data_coll
     tokenizer = BertTokenizerFast.from_pretrained(MODEL_NAME)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     
-    # Collator 选择 (ReasoningIE 改为 Batch Size 1 避免 OOM)
+    # Collator 选择
     if "Layering" in method_name:
         collator = lambda batch: data_collator_sequence(batch, tokenizer, tag_map, is_layering=True)
         batch_size = 2 
@@ -272,8 +272,14 @@ def train_and_evaluate(method_name, model, train_dataset, dev_dataset, data_coll
         batch_size = 1 
     elif "ReasoningIE" in method_name:
         collator = lambda batch: data_collator_generative(batch, tokenizer)
-        # [Fix] 显存优化：ReasoningIE 使用 EncoderDecoderModel，参数量大，减小 BS 防止 OOM
-        batch_size = 1 
+        # [关键修复 1] 显存优化：ReasoningIE 必须使用 batch_size=1，否则 6GB 显存不够
+        batch_size = 1
+        
+        # [关键修复 2] 开启梯度检查点 (Gradient Checkpointing)
+        # 这会大幅减少显存占用，解决 CUDA OOM 问题
+        print("已开启 Gradient Checkpointing 以节省显存...")
+        if hasattr(model, "model") and hasattr(model.model, "gradient_checkpointing_enable"):
+            model.model.gradient_checkpointing_enable()
     else:
         raise ValueError(f"Unknown method name: {method_name}")
     
@@ -312,7 +318,6 @@ def train_and_evaluate(method_name, model, train_dataset, dev_dataset, data_coll
         evaluate_model(method_name, model, dev_dataloader, device, tokenizer)
 
     print(f"训练完成：{method_name}。")
-    # 清理显存
     torch.cuda.empty_cache()
 
 # --- 主实验函数 (加载验证集) ---
