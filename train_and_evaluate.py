@@ -1,74 +1,74 @@
-# filename: train_and_evaluate.py (关键更新部分)
-
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-from transformers import BertTokenizer, AdamW # 导入 AdamW 优化器
+from transformers import BertTokenizer, AdamW
 import numpy as np
+import os
 
 # 导入所有常量和模型
-from constants import TAG_TO_ID, SPAN_LABEL_TO_ID, ENTITY_TYPES
-from models import LayeringNERModel, SingleTypeNERModel, SpanBasedNERModel, ReasoningIENERModel, MODEL_NAME
+# 确保 constants.py 和 models.py 在同一目录下
+from constants import TAG_TO_ID, SPAN_LABEL_TO_ID, ENTITY_TYPES, MODEL_NAME
+from models import LayeringNERModel, SingleTypeNERModel, SpanBasedNERModel, ReasoningIENERModel
+
+# 导入数据处理模块
+# 确保 data_processor.py 在同一目录下
+from data_processor import load_data, preprocess_for_all_methods
 
 # --- 辅助函数：将标签字符串转换为 ID ---
 def tags_to_ids(tags, tag_map):
-    # 将列表中的标签字符串映射为 ID，对于不存在的标签 ID 使用 -100 (用于 CrossEntropyLoss 忽略)
     return [tag_map.get(t, -100) for t in tags]
 
 # --- 通用 Data Collator (针对序列标注) ---
 def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
     tokens = [item['tokens'] for item in batch]
     
-    # 1. Tokenization (使用 BERT tokenizer)
+    # 1. Tokenization
     encoded_inputs = tokenizer(tokens, 
                                is_split_into_words=True, 
                                padding='max_length', 
                                truncation=True, 
                                return_tensors='pt')
-    input_ids = encoded_inputs['input_ids']
-    attention_mask = encoded_inputs['attention_mask']
     
     batch_labels_outer = []
     batch_labels_inner = []
     
     for i, item in enumerate(batch):
-        # 2. 标签对齐到 Sub-word 级别
         word_ids = encoded_inputs.word_ids(batch_index=i)
         
-        # 初始标签序列（Layering 或 Cascading）
+        # 获取标签序列
         if is_layering:
             raw_tags_outer = item['outer_tags']
             raw_tags_inner = item['inner_tags']
         else:
-            # 假设 Cascading 模型批次处理的是某个特定实体的标签
-            # 简化：这里需要用户传入要处理的实体类型
-            etype = 'PER' # 假设当前批次用于训练 PER 模型
-            raw_tags_outer = item[f'{etype}_tags']
+            # Cascading 模式下，这里简化处理 PER 类型，实际应根据模型类型传入参数
+            etype = 'PER' 
+            # 注意：如果使用 Cascading，需要确保 data_processor 生成了对应的 tags
+            raw_tags_outer = item.get(f'{etype}_tags', ['O'] * len(item['tokens']))
             raw_tags_inner = [t.replace(f'B-{etype}', 'B').replace(f'I-{etype}', 'I') 
-                              for t in raw_tags_outer] # Cascading 仅需 B/I/O
+                              for t in raw_tags_outer] 
             
-        # 3. 标签对齐 (只对第一个 Sub-word 赋予标签，其他 Sub-word 使用 -100 忽略)
         previous_word_idx = None
         label_ids_outer = []
         label_ids_inner = []
         
         for word_idx in word_ids:
             if word_idx is None:
-                # [CLS], [SEP], Padding token 
                 label_ids_outer.append(-100)
                 label_ids_inner.append(-100)
             elif word_idx != previous_word_idx:
-                # 句子中的第一个 sub-word 标记实际标签
-                tag_outer = raw_tags_outer[word_idx]
-                label_ids_outer.append(tag_map.get(tag_outer, -100))
-                
-                tag_inner = raw_tags_inner[word_idx]
-                # Cascading/Single-Type 模型需要 B/I/O 映射 (简化为 0, 1, 2)
-                tag_map_single = {'O': 0, f'B-{etype}': 1, f'I-{etype}': 2}
-                label_ids_inner.append(tag_map_single.get(tag_inner, -100) if not is_layering else tag_map.get(tag_inner, -100))
-
+                # 确保索引不越界 (以防 tokenization 和原始 tokens 不对齐的情况)
+                if word_idx < len(raw_tags_outer):
+                    tag_outer = raw_tags_outer[word_idx]
+                    label_ids_outer.append(tag_map.get(tag_outer, -100))
+                    
+                    tag_inner = raw_tags_inner[word_idx]
+                    # Cascading/Single-Type 模型映射
+                    tag_map_single = {'O': 0, f'B-{etype}': 1, f'I-{etype}': 2}
+                    label_ids_inner.append(tag_map_single.get(tag_inner, -100) if not is_layering else tag_map.get(tag_inner, -100))
+                else:
+                    label_ids_outer.append(-100)
+                    label_ids_inner.append(-100)
             else:
-                # 同一个词的后续 sub-word 忽略损失
                 label_ids_outer.append(-100)
                 label_ids_inner.append(-100)
 
@@ -78,18 +78,14 @@ def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
         batch_labels_inner.append(label_ids_inner)
 
     if is_layering:
-        return encoded_inputs['input_ids'], attention_mask, torch.tensor(batch_labels_outer), torch.tensor(batch_labels_inner)
+        return encoded_inputs['input_ids'], encoded_inputs['attention_mask'], torch.tensor(batch_labels_outer), torch.tensor(batch_labels_inner)
     else:
-        # Cascading 只返回一个标签集 (简化)
-        return encoded_inputs['input_ids'], attention_mask, torch.tensor(batch_labels_inner) 
-    
+        return encoded_inputs['input_ids'], encoded_inputs['attention_mask'], torch.tensor(batch_labels_inner) 
+
 # --- Span-Based Data Collator ---
 def data_collator_span_based(batch, tokenizer, span_label_map, max_spans=100):
-    
-    # 简化：仅处理 batch_size=1 的情况，Span-Based 模型的批处理实现非常复杂
     if len(batch) > 1:
-        # 在实际实验中，你需要实现复杂的动态 Padding 和 Span 统一化
-        raise ValueError("Span-Based 模型的 Data Collator 仅支持 batch_size=1 演示。")
+        raise ValueError("Span-Based 模型的 Data Collator 演示仅支持 batch_size=1。")
         
     item = batch[0]
     tokens = item['tokens']
@@ -98,19 +94,16 @@ def data_collator_span_based(batch, tokenizer, span_label_map, max_spans=100):
     input_ids = encoded_inputs['input_ids']
     attention_mask = encoded_inputs['attention_mask']
     
-    # 提取 Span 数据
     all_spans = item['spans']
-    
-    # 仅使用前 max_spans 个 span，确保演示简洁
     selected_spans = all_spans[:max_spans] 
     
-    start_indices = [s['span'][0] + 1 for s in selected_spans] # +1 偏移量用于 BERT 的 [CLS]
-    end_indices = [s['span'][1] for s in selected_spans]
+    # +1 是因为 BERT [CLS] token
+    start_indices = [s['span'][0] + 1 for s in selected_spans] 
+    end_indices = [s['span'][1] for s in selected_spans] # span 结束索引通常是 inclusive 或 exclusive，需根据 span 定义调整
     
     span_widths = [s['span'][1] - s['span'][0] for s in selected_spans]
     span_labels_ids = [span_label_map.get(s['label'], 0) for s in selected_spans]
     
-    # 将列表转换为 Tensor
     start_indices = torch.tensor(start_indices, dtype=torch.long)
     end_indices = torch.tensor(end_indices, dtype=torch.long)
     span_widths = torch.tensor(span_widths, dtype=torch.long)
@@ -118,15 +111,31 @@ def data_collator_span_based(batch, tokenizer, span_label_map, max_spans=100):
     
     return input_ids, attention_mask, start_indices, end_indices, span_widths, span_labels_ids
 
-# --- 训练与评估逻辑 ---
+# --- 真实数据集类 ---
+class NERDataset(Dataset):
+    def __init__(self, data_list):
+        self.data = data_list
+        
+    def __len__(self):
+        return len(self.data)
+        
+    def __getitem__(self, idx):
+        return self.data[idx]
 
+# --- 训练与评估逻辑 ---
 def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, num_epochs=3, learning_rate=1e-5):
     print(f"\n--- 启动 {method_name} 方法训练 ---")
+    print(f"数据集大小: {len(dataset)}")
+    
+    # 检查是否有 GPU
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    print(f"使用设备: {device}")
+    model.to(device)
     
     tokenizer = BertTokenizer.from_pretrained(MODEL_NAME)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     
-    # 根据模型方法选择 Collator
+    # 根据方法选择 Collator 和 Batch Size
     if "Layering" in method_name:
         collator = lambda batch: data_collator_sequence(batch, tokenizer, tag_map, is_layering=True)
         batch_size = 4
@@ -135,21 +144,21 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
         batch_size = 4
     elif "Span-Based" in method_name or "ReasoningIE" in method_name:
         collator = lambda batch: data_collator_span_based(batch, tokenizer, tag_map)
-        # Span-Based 演示只能用 batch_size=1
         batch_size = 1 
     else:
-        raise ValueError("Unknown method name")
+        raise ValueError(f"Unknown method name: {method_name}")
     
     dataloader = DataLoader(dataset, batch_size=batch_size, collate_fn=collator, shuffle=True)
     
-    # 模拟训练循环
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
         
-        # 使用进度条（省略实际实现）
         print(f"Epoch {epoch+1}/{num_epochs}")
         for i, batch in enumerate(dataloader):
+            # 将数据移动到 GPU
+            batch = [t.to(device) if isinstance(t, torch.Tensor) else t for t in batch]
+            
             optimizer.zero_grad()
             
             if "Layering" in method_name:
@@ -157,14 +166,12 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
                 loss, _, _ = model(input_ids, attention_mask, labels_outer, labels_inner)
             
             elif "Cascading" in method_name:
-                input_ids, attention_mask, labels = batch # labels 是单个实体的标签
+                input_ids, attention_mask, labels = batch 
                 loss, _ = model(input_ids, attention_mask, labels)
                 
             elif "Span-Based" in method_name or "ReasoningIE" in method_name:
-                # Span-Based/ReasoningIE 的 forward 接收 6 个参数
                 input_ids, attention_mask, start_indices, end_indices, span_widths, span_labels = batch
                 loss, _ = model(input_ids, attention_mask, start_indices, end_indices, span_widths, span_labels)
-                
             
             loss.backward()
             optimizer.step()
@@ -174,61 +181,51 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
                  print(f"  Batch {i+1}/{len(dataloader)} Loss: {total_loss / (i+1):.4f}")
 
     print(f"训练完成：{method_name}。")
-    # 模拟评估结果
-    # ... (评估逻辑省略)
-    # print(f"*** 模拟评估结果： F1 Score: {0.75 + torch.randn(1).item() * 0.05:.4f} ***")
 
-# --- 主实验函数 (需要修改以调用新的 train_and_evaluate) ---
-
+# --- 主实验函数 ---
 def run_experiment_pipeline(data_files):
-    # 1. 数据加载与预处理 (假设 data_processor.py 已实现 load_data 和 preprocess_for_all_methods)
-    # raw_data = load_data(data_files[0]) 
-    # processed_data = preprocess_for_all_methods(raw_data)
+    # 获取训练数据路径
+    train_file = data_files[0]
     
-    # 🚨 由于无法访问原始文件，这里需要模拟 processed_data 以便演示模型初始化
-    class DummyDataset(Dataset):
-        def __init__(self, size):
-            self.data = [{'tokens': ['这', '是', '一', '个', '示', '例'], 
-                          'outer_tags': ['B-ORG', 'I-ORG', 'O', 'B-PER', 'I-PER', 'O'],
-                          'inner_tags': ['B-PER', 'I-PER', 'O', 'O', 'O', 'O'],
-                          'PER_tags': ['O', 'O', 'O', 'B-PER', 'I-PER', 'O'], # Cascading
-                          'spans': [{'span': (0, 2), 'label': 'ORG'}, {'span': (3, 5), 'label': 'PER'}]
-                          } for _ in range(size)]
-        def __len__(self): return len(self.data)
-        def __getitem__(self, idx): return self.data[idx]
-        
-    print("使用模拟数据进行模型初始化和训练逻辑演示...")
-    dummy_size = 50
+    if not os.path.exists(train_file):
+        print(f"错误: 找不到文件 {train_file}")
+        print("请确保数据文件位于 'data/train.jsonlines' 或修改路径。")
+        return
+
+    print(f"正在加载数据: {train_file} ...")
+    raw_data = load_data(train_file)
+    
+    print("正在预处理数据 (生成 Layering, Cascading, Span-based 格式)...")
+    processed_data = preprocess_for_all_methods(raw_data)
     
     # 2. 模型定义和实验运行
     
     # --- 方法 1: Layering Method ---
     layering_model = LayeringNERModel()
-    layering_dataset = DummyDataset(dummy_size)
-    # train_and_evaluate("Layering Method (Outer/Inner BIO)", layering_model, layering_dataset, data_collator_sequence, TAG_TO_ID)
-    
-    # --- 方法 2: Cascading Method (以 PER 实体为例) ---
-    # Cascading 模型的标签映射是精简的 (O/B-PER/I-PER)
-    cascading_per_model = SingleTypeNERModel('PER')
-    cascading_dataset = DummyDataset(dummy_size)
-    # train_and_evaluate("Cascading Method (PER Entity)", cascading_per_model, cascading_dataset, data_collator_sequence, {'O':0, 'B-PER':1, 'I-PER':2})
-
-    # --- 方法 3: Span-Based Method ---
-    span_model = SpanBasedNERModel()
-    span_dataset = DummyDataset(dummy_size)
-    # train_and_evaluate("Enumeration/Span-Based Method", span_model, span_dataset, data_collator_span_based, SPAN_LABEL_TO_ID)
-
-    # --- 方法 4: ReasoningIE Style ---
-    reasoning_model = ReasoningIENERModel()
-    reasoning_dataset = DummyDataset(dummy_size)
+    layering_dataset = NERDataset(processed_data['layering'])
     
     print("\n------------------------------------------------------------")
-    print("模型填充完成。以下是运行 Layering Method 的模拟训练演示：")
+    print(f"开始运行 Layering Method 训练 (数据量: {len(layering_dataset)})")
     print("------------------------------------------------------------")
     
-    # 实际运行 Layering Method 演示
-    train_and_evaluate("Layering Method (Outer/Inner BIO)", layering_model, layering_dataset, None, TAG_TO_ID)
+    # 运行 Layering Method
+    # data_collator_fn 参数在这里传入 None，因为我们在 train_and_evaluate 内部根据方法名选择了 collator
+    train_and_evaluate("Layering Method", layering_model, layering_dataset, None, TAG_TO_ID)
+
+    # 若要运行其他方法，请取消以下注释:
+    
+    # --- 方法 2: Cascading Method (以 PER 为例) ---
+    # cascading_per_model = SingleTypeNERModel('PER')
+    # cascading_dataset = NERDataset(processed_data['cascading']) # 注意: 这里需要筛选或调整 dataset 以仅包含有 PER 标签的数据
+    # train_and_evaluate("Cascading Method (PER)", cascading_per_model, cascading_dataset, None, TAG_TO_ID)
+
+    # --- 方法 3: Span-Based Method ---
+    # span_model = SpanBasedNERModel()
+    # span_dataset = NERDataset(processed_data['span_based'])
+    # train_and_evaluate("Span-Based Method", span_model, span_dataset, None, SPAN_LABEL_TO_ID)
 
 
 if __name__ == '__main__':  
-    run_experiment_pipeline(["dummy_file.jsonlines"]) # 使用模拟数据运行
+    # 假设数据在当前目录下的 data 文件夹中
+    data_path = os.path.join("data", "train.jsonlines")
+    run_experiment_pipeline([data_path])
