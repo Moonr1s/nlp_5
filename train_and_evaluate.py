@@ -1,19 +1,19 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-# 修改部分：分开导入 BertTokenizer 和 AdamW
-from transformers import BertTokenizer
-from torch.optim import AdamW  # 使用 PyTorch 原生的 AdamW
+# 修改 1: 使用 BertTokenizerFast (必须用 Fast 版本才能支持 word_ids 方法)
+from transformers import BertTokenizerFast
+from torch.optim import AdamW
 import numpy as np
 import os
+# 修改 2: 导入 tqdm 用于显示进度条
+from tqdm import tqdm
 
 # 导入所有常量和模型
-# 确保 constants.py 和 models.py 在同一目录下
 from constants import TAG_TO_ID, SPAN_LABEL_TO_ID, ENTITY_TYPES, MODEL_NAME, MAX_GEN_LEN
 from models import LayeringNERModel, SingleTypeNERModel, SpanBasedNERModel, ReasoningIENERModel
 
 # 导入数据处理模块
-# 确保 data_processor.py 在同一目录下
 from data_processor import load_data, preprocess_for_all_methods
 
 # --- 辅助函数：将标签字符串转换为 ID ---
@@ -23,6 +23,7 @@ def tags_to_ids(tags, tag_map):
 # --- 1. Sequence Data Collator (Layering / Cascading) ---
 def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
     tokens = [item['tokens'] for item in batch]
+    # Fast Tokenizer 在这里会支持 word_ids()
     encoded_inputs = tokenizer(tokens, is_split_into_words=True, padding='max_length', truncation=True, return_tensors='pt')
     
     batch_labels_outer = []
@@ -36,7 +37,7 @@ def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
         else:
             etype = 'PER' # 简化演示
             raw_tags_outer = item.get(f'{etype}_tags', ['O'] * len(item['tokens']))
-            raw_tags_inner = raw_tags_outer # 简化
+            raw_tags_inner = raw_tags_outer 
             
         previous_word_idx = None
         label_ids_outer = []
@@ -87,15 +88,11 @@ def data_collator_generative(batch, tokenizer):
     inputs = [item['input_text'] for item in batch]
     targets = [item['target_text'] for item in batch]
     
-    # 输入 Tokenization
     model_inputs = tokenizer(inputs, max_length=512, padding='max_length', truncation=True, return_tensors='pt')
     
-    # 目标 Tokenization (作为 labels)
-    # 使用 tokenizer 作为 target_tokenizer (BERT tokenizer 通用)
     with tokenizer.as_target_tokenizer():
         labels = tokenizer(targets, max_length=MAX_GEN_LEN, padding='max_length', truncation=True, return_tensors='pt')
     
-    # 将 Pad Token 的 Label 设为 -100，忽略 Loss
     labels_ids = labels['input_ids']
     labels_ids[labels_ids == tokenizer.pad_token_id] = -100
     
@@ -119,7 +116,8 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
     print(f"使用设备: {device}")
     model.to(device)
     
-    tokenizer = BertTokenizer.from_pretrained(MODEL_NAME)
+    # 修改 3: 实例化 BertTokenizerFast
+    tokenizer = BertTokenizerFast.from_pretrained(MODEL_NAME)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     
     # Collator 选择
@@ -134,7 +132,7 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
         batch_size = 1 
     elif "ReasoningIE" in method_name:
         collator = lambda batch: data_collator_generative(batch, tokenizer)
-        batch_size = 4 # 生成式可以支持 batch
+        batch_size = 4
     else:
         raise ValueError(f"Unknown method name: {method_name}")
     
@@ -144,8 +142,11 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
         model.train()
         total_loss = 0
         
-        print(f"Epoch {epoch+1}/{num_epochs}")
-        for i, batch in enumerate(dataloader):
+        # 修改 4: 使用 tqdm 增加进度条
+        # enumerate(dataloader) 被 tqdm 包裹
+        progress_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Epoch {epoch+1}/{num_epochs}")
+        
+        for i, batch in progress_bar:
             batch = [t.to(device) if isinstance(t, torch.Tensor) else t for t in batch]
             optimizer.zero_grad()
             
@@ -166,8 +167,8 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
             optimizer.step()
             total_loss += loss.item()
             
-            if (i + 1) % 10 == 0:
-                 print(f"  Batch {i+1}/{len(dataloader)} Loss: {total_loss / (i+1):.4f}")
+            # 更新进度条后缀，显示当前平均 Loss
+            progress_bar.set_postfix({'loss': f'{total_loss / (i + 1):.4f}'})
 
     print(f"训练完成：{method_name}。")
 
