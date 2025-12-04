@@ -344,11 +344,11 @@ def run_experiment_pipeline(data_files):
     #                   None, TAG_TO_ID)
 
     # 2. Cascading (PER)
-    cascading_model = SingleTypeNERModel('PER')
-    train_and_evaluate("Cascading Method (PER)", cascading_model, 
-                       NERDataset(train_processed['cascading']), 
-                       NERDataset(dev_processed['cascading']),
-                       None, TAG_TO_ID)
+    #cascading_model = SingleTypeNERModel('PER')
+    #train_and_evaluate("Cascading Method (PER)", cascading_model, 
+    #                   NERDataset(train_processed['cascading']), 
+    #                   NERDataset(dev_processed['cascading']),
+    #                   None, TAG_TO_ID)
 
     # 3. Span-Based
     span_model = SpanBasedNERModel()
