@@ -168,7 +168,7 @@ def evaluate_model(method_name, model, dataloader, device, tokenizer):
     calculate_f1(total_pred, total_gold, prefix=method_name)
     model.train() # 切回训练模式
 
-# --- Data Collators (保持之前修复的版本) ---
+# --- Data Collators (已修复 Span-Based 的 max_spans) ---
 def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
     tokens = [item['tokens'] for item in batch]
     encoded_inputs = tokenizer(tokens, is_split_into_words=True, padding=True, truncation=True, return_tensors='pt')
@@ -214,7 +214,8 @@ def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
     else:
         return encoded_inputs['input_ids'], encoded_inputs['attention_mask'], torch.tensor(batch_labels_inner) 
 
-def data_collator_span_based(batch, tokenizer, span_label_map, max_spans=100):
+def data_collator_span_based(batch, tokenizer, span_label_map, max_spans=500):
+    # [Fix] 将 max_spans 从 100 提高到 500，以覆盖更多实体
     if len(batch) > 1: raise ValueError("Span-Based batch_size=1 only for demo.")
     item = batch[0]
     tokens = item['tokens']
@@ -343,11 +344,11 @@ def run_experiment_pipeline(data_files):
     #                   None, TAG_TO_ID)
 
     # 2. Cascading (PER)
-    #cascading_model = SingleTypeNERModel('PER')
-    #train_and_evaluate("Cascading Method (PER)", cascading_model, 
-    #                   NERDataset(train_processed['cascading']), 
-    #                   NERDataset(dev_processed['cascading']),
-    #                   None, TAG_TO_ID)
+    cascading_model = SingleTypeNERModel('PER')
+    train_and_evaluate("Cascading Method (PER)", cascading_model, 
+                       NERDataset(train_processed['cascading']), 
+                       NERDataset(dev_processed['cascading']),
+                       None, TAG_TO_ID)
 
     # 3. Span-Based
     span_model = SpanBasedNERModel()

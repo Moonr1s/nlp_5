@@ -103,7 +103,8 @@ class SpanBasedNERModel(nn.Module):
         # b) 计算 Span Average Pooling
         span_reps = []
         for i, (s, e) in enumerate(zip(start_indices, end_indices)):
-            h_span_avg = torch.mean(sequence_output[0, s:e], dim=0)
+            # [Fix] 修改切片范围为 s : e + 1，否则单字实体会变成空切片 (NaN)，且多字实体会丢失最后一个字
+            h_span_avg = torch.mean(sequence_output[0, s : e + 1], dim=0)
             span_reps.append(h_span_avg)
         h_span_avg = torch.stack(span_reps)
         
@@ -142,20 +143,16 @@ class ReasoningIENERModel(nn.Module):
         self.model.config.eos_token_id = 102       # [SEP]
         self.model.config.pad_token_id = 0         # [PAD]
         
-        # 确保词汇表大小匹配 (防止某些版本报错)
+        # 确保词汇表大小匹配
         self.model.config.vocab_size = self.model.config.encoder.vocab_size
 
     def forward(self, input_ids, attention_mask, labels=None):
         """
-        前向传播函数
-        在训练时，传入 labels，EncoderDecoderModel 会自动计算 loss。
+        前向传播函数 (Fix: 之前版本缺失此方法导致报错)
         """
-        # EncoderDecoderModel 的 forward 接受 labels 参数用于计算 seq2seq loss
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             labels=labels
         )
-        
-        # 返回 loss 和 logits，与 train_and_evaluate.py 中的调用格式保持一致
         return outputs.loss, outputs.logits
