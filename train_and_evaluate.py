@@ -351,11 +351,11 @@ def run_experiment_pipeline(data_files):
     #                   None, TAG_TO_ID)
 
     # 3. Span-Based
-    span_model = SpanBasedNERModel()
-    train_and_evaluate("Span-Based Method", span_model, 
-                       NERDataset(train_processed['span_based']), 
-                       NERDataset(dev_processed['span_based']),
-                       None, SPAN_LABEL_TO_ID)
+    #span_model = SpanBasedNERModel()
+    #train_and_evaluate("Span-Based Method", span_model, 
+    #                   NERDataset(train_processed['span_based']), 
+    #                   NERDataset(dev_processed['span_based']),
+    #                   None, SPAN_LABEL_TO_ID)
 
     # 4. ReasoningIE (Generative)
     reasoning_model = ReasoningIENERModel()
