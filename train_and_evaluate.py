@@ -1,12 +1,11 @@
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
-# 修改 1: 使用 BertTokenizerFast (必须用 Fast 版本才能支持 word_ids 方法)
+# 必须使用 BertTokenizerFast 才能支持 word_ids 方法
 from transformers import BertTokenizerFast
 from torch.optim import AdamW
 import numpy as np
 import os
-# 修改 2: 导入 tqdm 用于显示进度条
 from tqdm import tqdm
 
 # 导入所有常量和模型
@@ -34,6 +33,7 @@ def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
         if is_layering:
             raw_tags_outer = item['outer_tags']
             raw_tags_inner = item['inner_tags']
+            etype = None # Layering 模式下不需要 etype
         else:
             etype = 'PER' # 简化演示
             raw_tags_outer = item.get(f'{etype}_tags', ['O'] * len(item['tokens']))
@@ -48,11 +48,19 @@ def data_collator_sequence(batch, tokenizer, tag_map, is_layering=False):
                 label_ids_outer.append(-100)
                 label_ids_inner.append(-100)
             elif word_idx < len(raw_tags_outer):
+                # 1. 处理 Outer Label
                 label_ids_outer.append(tag_map.get(raw_tags_outer[word_idx], -100))
-                # Cascading 映射简化
-                tag_map_single = {'O': 0, f'B-{etype}': 1, f'I-{etype}': 2}
-                inner_map = tag_map if is_layering else tag_map_single
-                label_ids_inner.append(inner_map.get(raw_tags_inner[word_idx], -100))
+                
+                # 2. 处理 Inner Label
+                if is_layering:
+                    # Layering 模式直接使用传入的 tag_map
+                    inner_val = tag_map.get(raw_tags_inner[word_idx], -100)
+                else:
+                    # Cascading 模式动态构建 map (依赖 etype)
+                    tag_map_single = {'O': 0, f'B-{etype}': 1, f'I-{etype}': 2}
+                    inner_val = tag_map_single.get(raw_tags_inner[word_idx], -100)
+                
+                label_ids_inner.append(inner_val)
             else:
                 label_ids_outer.append(-100)
                 label_ids_inner.append(-100)
@@ -88,11 +96,14 @@ def data_collator_generative(batch, tokenizer):
     inputs = [item['input_text'] for item in batch]
     targets = [item['target_text'] for item in batch]
     
+    # 输入 Tokenization
     model_inputs = tokenizer(inputs, max_length=512, padding='max_length', truncation=True, return_tensors='pt')
     
+    # 目标 Tokenization (作为 labels)
     with tokenizer.as_target_tokenizer():
         labels = tokenizer(targets, max_length=MAX_GEN_LEN, padding='max_length', truncation=True, return_tensors='pt')
     
+    # 将 Pad Token 的 Label 设为 -100，忽略 Loss
     labels_ids = labels['input_ids']
     labels_ids[labels_ids == tokenizer.pad_token_id] = -100
     
@@ -116,7 +127,6 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
     print(f"使用设备: {device}")
     model.to(device)
     
-    # 修改 3: 实例化 BertTokenizerFast
     tokenizer = BertTokenizerFast.from_pretrained(MODEL_NAME)
     optimizer = AdamW(model.parameters(), lr=learning_rate)
     
@@ -142,8 +152,7 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
         model.train()
         total_loss = 0
         
-        # 修改 4: 使用 tqdm 增加进度条
-        # enumerate(dataloader) 被 tqdm 包裹
+        # 使用 tqdm 增加进度条
         progress_bar = tqdm(enumerate(dataloader), total=len(dataloader), desc=f"Epoch {epoch+1}/{num_epochs}")
         
         for i, batch in progress_bar:
@@ -167,7 +176,6 @@ def train_and_evaluate(method_name, model, dataset, data_collator_fn, tag_map, n
             optimizer.step()
             total_loss += loss.item()
             
-            # 更新进度条后缀，显示当前平均 Loss
             progress_bar.set_postfix({'loss': f'{total_loss / (i + 1):.4f}'})
 
     print(f"训练完成：{method_name}。")
