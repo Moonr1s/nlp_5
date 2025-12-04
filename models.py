@@ -141,3 +141,21 @@ class ReasoningIENERModel(nn.Module):
         self.model.config.decoder_start_token_id = 101 # [CLS]
         self.model.config.eos_token_id = 102       # [SEP]
         self.model.config.pad_token_id = 0         # [PAD]
+        
+        # 确保词汇表大小匹配 (防止某些版本报错)
+        self.model.config.vocab_size = self.model.config.encoder.vocab_size
+
+    def forward(self, input_ids, attention_mask, labels=None):
+        """
+        前向传播函数
+        在训练时，传入 labels，EncoderDecoderModel 会自动计算 loss。
+        """
+        # EncoderDecoderModel 的 forward 接受 labels 参数用于计算 seq2seq loss
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels
+        )
+        
+        # 返回 loss 和 logits，与 train_and_evaluate.py 中的调用格式保持一致
+        return outputs.loss, outputs.logits

@@ -356,40 +356,12 @@ def run_experiment_pipeline(data_files):
                        NERDataset(dev_processed['span_based']),
                        None, SPAN_LABEL_TO_ID)
 
-class ReasoningIENERModel(nn.Module):
-    """
-    模型 4: ReasoningIE Method (Generative / Seq2Seq)
-    参考 HuiResearch/ReasoningIE，使用生成式框架。
-    输入: 原始句子
-    输出: 实体描述字符串 (例如: "人名: 张三; 地名: 北京")
-    """
-    def __init__(self):
-        super().__init__()
-        # 使用 BERT 初始化 Encoder 和 Decoder (BERT2BERT)
-        self.model = EncoderDecoderModel.from_encoder_decoder_pretrained(MODEL_NAME, MODEL_NAME)
-        
-        # 配置生成参数 (bert-base-chinese: [CLS]=101, [SEP]=102, [PAD]=0)
-        self.model.config.decoder_start_token_id = 101 # [CLS]
-        self.model.config.eos_token_id = 102       # [SEP]
-        self.model.config.pad_token_id = 0         # [PAD]
-        
-        # 确保词汇表大小匹配 (防止某些版本报错)
-        self.model.config.vocab_size = self.model.config.encoder.vocab_size
-
-    def forward(self, input_ids, attention_mask, labels=None):
-        """
-        前向传播函数
-        在训练时，传入 labels，EncoderDecoderModel 会自动计算 loss。
-        """
-        # EncoderDecoderModel 的 forward 接受 labels 参数用于计算 seq2seq loss
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels
-        )
-        
-        # 返回 loss 和 logits，与 train_and_evaluate.py 中的调用格式保持一致
-        return outputs.loss, outputs.logits
+    # 4. ReasoningIE (Generative)
+    reasoning_model = ReasoningIENERModel()
+    train_and_evaluate("ReasoningIE Method", reasoning_model, 
+                       NERDataset(train_processed['reasoning_ie']), 
+                       NERDataset(dev_processed['reasoning_ie']),
+                       None, None)
 
 if __name__ == '__main__':  
     data_path = os.path.join("data", "train.jsonlines")
