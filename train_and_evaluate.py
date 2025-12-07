@@ -138,10 +138,14 @@ def evaluate_model(method_name, model, dataloader, device, tokenizer):
             elif "ReasoningIE" in method_name:
                 input_ids, attention_mask, labels = batch
                 # 生成式解码
+                # [Fix] 显式传入 decoder_start_token_id，解决 ValueError
                 generated_ids = model.model.generate(
                     input_ids, 
                     attention_mask=attention_mask, 
-                    max_length=MAX_GEN_LEN
+                    max_length=MAX_GEN_LEN,
+                    decoder_start_token_id=tokenizer.cls_token_id,
+                    eos_token_id=tokenizer.sep_token_id,
+                    pad_token_id=tokenizer.pad_token_id
                 )
                 decoded_preds = tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
                 
