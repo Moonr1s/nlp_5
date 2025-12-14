@@ -12,11 +12,7 @@ class LayeringNERModel(nn.Module):
         super().__init__()
         # 使用 Hugging Face 的 BERT 作为 Encoder
         self.bert = BertModel.from_pretrained(MODEL_NAME)
-        
-        # 可选：增加 BiLSTM 层来捕获更复杂的局部依赖
-        self.bilstm = nn.LSTM(EMBED_DIM, EMBED_DIM // 2, 
-                              bidirectional=True, batch_first=True)
-        
+               
         # 序列标注头 - 外层
         self.tagger_outer = nn.Linear(EMBED_DIM, NUM_SEQ_LABELS)
         # 序列标注头 - 内层
@@ -29,10 +25,7 @@ class LayeringNERModel(nn.Module):
         # 1. BERT Encoding
         outputs = self.bert(input_ids, attention_mask=attention_mask)
         sequence_output = outputs[0] # (batch_size, seq_len, embed_dim)
-        
-        # 2. (Optional) BiLSTM layer
-        # sequence_output, _ = self.bilstm(sequence_output) 
-        
+         
         # 3. 预测 Logits
         logits_outer = self.tagger_outer(sequence_output)
         logits_inner = self.tagger_inner(sequence_output)
@@ -62,6 +55,8 @@ class SingleTypeNERModel(nn.Module):
         outputs = self.bert(input_ids, attention_mask=attention_mask)
         sequence_output = outputs[0]
         logits = self.tagging_head(sequence_output)
+
+        
         
         if labels is not None:
             loss = self.criterion(logits.view(-1, 3), labels.view(-1))
@@ -126,19 +121,13 @@ class SpanBasedNERModel(nn.Module):
 
 # --- 4. ReasoningIE-Style Model (Generative / Seq2Seq) ---
 class ReasoningIENERModel(nn.Module):
-    """
-    模型 4: ReasoningIE Method (Generative / Seq2Seq)
-    参考 HuiResearch/ReasoningIE，使用生成式框架。
-    这里使用 EncoderDecoderModel (BERT-to-BERT) 来模拟生成过程。
-    输入: 原始句子
-    输出: 实体描述字符串 (例如: "人名: 张三; 地名: 北京")
-    """
     def __init__(self):
         super().__init__()
         # 使用 BERT 初始化 Encoder 和 Decoder (BERT2BERT)
         self.model = EncoderDecoderModel.from_encoder_decoder_pretrained(MODEL_NAME, MODEL_NAME)
         
         # 配置生成参数 (bert-base-chinese: [CLS]=101, [SEP]=102, [PAD]=0)
+
         self.model.config.decoder_start_token_id = 101 # [CLS]
         self.model.config.eos_token_id = 102       # [SEP]
         self.model.config.pad_token_id = 0         # [PAD]
@@ -147,9 +136,6 @@ class ReasoningIENERModel(nn.Module):
         self.model.config.vocab_size = self.model.config.encoder.vocab_size
 
     def forward(self, input_ids, attention_mask, labels=None):
-        """
-        前向传播函数 (Fix: 之前版本缺失此方法导致报错)
-        """
         outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,

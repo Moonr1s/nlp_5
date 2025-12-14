@@ -66,7 +66,6 @@ def extract_entities_span(start_indices, end_indices, label_ids):
     return entities
 
 def parse_generative_output(text):
-    """解析 'PER: 张三; LOC: 北京' 格式"""
     entities = set()
     if not text or text == "无实体": return entities
     parts = text.split(";")
